@@ -3,7 +3,13 @@ import type { Task } from '../../types';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 
-export const DashboardView = ({ tasks }: { tasks: Task[] }) => {
+// Definimos la interfaz de las props para incluir la función onAddTask
+interface DashboardViewProps {
+  tasks: Task[];
+  onAddTask: () => void; // <--- Nueva prop para manejar el click
+}
+
+export const DashboardView = ({ tasks, onAddTask }: DashboardViewProps) => {
   const pendingTasks = tasks.filter(t => t.status !== 'DONE');
   const completedToday = tasks.filter(t => t.status === 'DONE').length;
 
@@ -18,7 +24,12 @@ export const DashboardView = ({ tasks }: { tasks: Task[] }) => {
         <div className="flex items-center gap-2">
           <span className="text-sm text-slate-500">Semana 12</span>
           <div className="h-8 w-px bg-slate-200 mx-2"></div>
-          <button className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2">
+          
+          {/* Botón conectado con la función onAddTask */}
+          <button 
+            onClick={onAddTask} 
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 shadow-sm shadow-blue-200 hover:shadow-md active:scale-95 transform duration-100"
+          >
             <Plus size={16} /> Nueva Tarea
           </button>
         </div>
@@ -73,17 +84,29 @@ export const DashboardView = ({ tasks }: { tasks: Task[] }) => {
               </div>
             </div>
           ))}
+          
+          {pendingTasks.length === 0 && (
+             <div className="p-8 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50 text-slate-500 text-sm">
+                ¡Todo limpio! No tienes tareas pendientes.
+             </div>
+          )}
         </div>
 
         {/* Sidebar Derecho */}
         <div className="space-y-4">
-          <Card className="p-5 bg-gradient-to-br from-blue-600 to-indigo-600 text-white border-none">
-            <div className="flex items-start justify-between">
+          <Card className="p-5 bg-gradient-to-br from-blue-600 to-indigo-600 text-white border-none relative overflow-hidden group cursor-pointer transition-all hover:scale-[1.02]">
+            <div className="absolute top-0 right-0 p-3 opacity-10 group-hover:opacity-20 transition-opacity">
+               <CalendarClock size={100} />
+            </div>
+            <div className="relative z-10 flex items-start justify-between">
               <div>
                 <h3 className="font-semibold text-lg">Modo Premium</h3>
                 <p className="text-blue-100 text-sm mt-1">Asignación dinámica activa.</p>
+                <div className="mt-4 text-xs bg-white/20 inline-block px-2 py-1 rounded font-medium backdrop-blur-sm">
+                   Ver detalles
+                </div>
               </div>
-              <div className="bg-white/20 p-2 rounded-lg">
+              <div className="bg-white/20 p-2 rounded-lg backdrop-blur-sm">
                 <CalendarClock size={20} />
               </div>
             </div>

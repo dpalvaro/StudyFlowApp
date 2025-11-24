@@ -1,11 +1,10 @@
 import { useState, useEffect } from 'react';
-import { Menu, X, CalendarClock, BarChart3, Search, Database, Loader2, Plus, LogOut, Sparkles } from 'lucide-react';
+import { Menu, X, Loader2, Plus, LogOut } from 'lucide-react';
 import { db, auth } from './lib/firebase'; 
 import { signOut } from 'firebase/auth'; 
 import { collection, onSnapshot, query, orderBy, addDoc, updateDoc, deleteDoc, doc, Timestamp } from 'firebase/firestore';
 import { useAuth } from './context/AuthContext';
 
-// Imports Componentes
 // Imports Componentes
 import type { Task, TaskStatus } from './types';
 import { Sidebar } from './components/layout/Sidebar';
@@ -15,7 +14,7 @@ import { CreateTaskModal } from './features/tasks/CreateTaskModal';
 import { PlanView } from './features/calendar/PlanView';
 import { AnalyticsView } from './features/analytics/AnalyticsView';
 import { PremiumGuard } from './components/ui/PremiumGuard';
-import { OnboardingWizard } from './features/onboarding/OnboardingWizard'; // <--- IMPORTANTE
+import { OnboardingWizard } from './features/onboarding/OnboardingWizard';
 
 function App() {
   const { user, profile } = useAuth(); 
@@ -40,6 +39,7 @@ function App() {
         return {
           id: doc.id,
           ...data,
+          // Convertir Timestamp a string YYYY-MM-DD si es necesario para inputs date
           dueDate: data.dueDate?.toDate ? data.dueDate.toDate().toISOString().split('T')[0] : data.dueDate
         } as Task;
       });
@@ -53,9 +53,9 @@ function App() {
   }, [user]);
 
   // --- FIRESTORE: ESCRITURA (CRUD) ---
-  // ... (Mantenemos las mismas funciones de siempre: handleStatusChange, etc.)
   
   const handleStatusChange = async (id: string, status: TaskStatus) => {
+    // Optimistic UI update
     setTasks(prev => prev.map(t => t.id === id ? { ...t, status } : t));
     await updateDoc(doc(db, 'users', USER_ID, 'tasks', id), { status });
   };
@@ -97,7 +97,6 @@ function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex">
       
       {/* --- WIZARD DE BIENVENIDA --- */}
-      {/* Si el perfil existe pero NO ha completado onboarding, mostramos el Wizard */}
       {profile && !profile.hasCompletedOnboarding && <OnboardingWizard />}
 
       <CreateTaskModal 
@@ -126,9 +125,15 @@ function App() {
         </div>
       </div>
 
+      {/* Mobile Header */}
       <div className="md:hidden fixed top-0 w-full bg-white border-b border-slate-200 z-50 px-4 h-16 flex items-center justify-between">
-        <div className="flex items-center gap-2"><div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">S</div><span className="font-bold text-lg text-slate-800">StudyFlow</span></div>
-        <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 text-slate-600">{isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}</button>
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
+          <span className="font-bold text-lg text-slate-800">StudyFlow</span>
+        </div>
+        <button onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)} className="p-2 text-slate-600">
+          {isMobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+        </button>
       </div>
 
       <main className="flex-1 md:ml-72 p-4 md:p-8 mt-16 md:mt-0 overflow-y-auto h-screen">
@@ -144,7 +149,12 @@ function App() {
 
           {/* --- VISTAS --- */}
 
-          {activeTab === 'dashboard' && <DashboardView tasks={tasks} />}
+          {activeTab === 'dashboard' && (
+            <DashboardView 
+              tasks={tasks} 
+              onAddTask={() => setIsModalOpen(true)} // <--- AQUÍ ESTÁ EL ARREGLO
+            />
+          )}
           
           {activeTab === 'tasks' && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
