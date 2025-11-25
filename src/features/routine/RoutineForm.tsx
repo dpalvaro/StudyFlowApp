@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clock, Save, Moon, Sun, BookOpen, Info, Eraser, Tag, Settings2, Type } from 'lucide-react';
+import { Clock, Save, Moon, Sun, BookOpen, Info, Eraser, Tag, Plus, X, Edit3 } from 'lucide-react';
 import type { RoutineConfig, TimeBlock } from '../../types';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
@@ -7,29 +7,37 @@ import { db } from '../../lib/firebase';
 const DEMO_USER_ID = "demo-student";
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
+// Extendemos la interfaz para incluir las etiquetas personalizadas si no existen
+interface ExtendedRoutineConfig extends RoutineConfig {
+  customTags?: string[];
+}
+
 export const RoutineForm = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   
   // --- ESTADOS DE CONFIGURACIÓN ---
-  const [routine, setRoutine] = useState<RoutineConfig>({
+  const [routine, setRoutine] = useState<ExtendedRoutineConfig>({
     sleepStart: "23:00",
     sleepEnd: "07:00",
-    unavailableBlocks: []
+    unavailableBlocks: [],
+    customTags: ['Clases', 'Deporte', 'Trabajo', 'Estudio'] // Default tags
   });
 
-  // 60 o 30 minutos
   const [interval, setInterval] = useState<60 | 30>(60);
   
   // Etiqueta actual para "pintar"
   const [currentLabel, setCurrentLabel] = useState("Clases");
   
-  // Estado visual del Grid: Diccionario "dia-hora-minuto" -> "Etiqueta"
-  // Ej: "1-9-0" -> "Matemáticas", "1-9-30" -> "Matemáticas"
+  // Estado para gestionar la edición de etiquetas
+  const [isManagingTags, setIsManagingTags] = useState(false);
+  const [newTagInput, setNewTagInput] = useState("");
+
+  // Estado visual del Grid
   const [gridData, setGridData] = useState<Record<string, string>>({});
   
   const [isMouseDown, setIsMouseDown] = useState(false);
-  const [isPainting, setIsPainting] = useState(true); // true = pintando, false = borrando
+  const [isPainting, setIsPainting] = useState(true);
 
   // 1. Cargar Rutina
   useEffect(() => {
@@ -38,31 +46,31 @@ export const RoutineForm = () => {
       const docSnap = await getDoc(docRef);
       
       if (docSnap.exists()) {
-        const data = docSnap.data() as RoutineConfig;
+        const data = docSnap.data() as ExtendedRoutineConfig;
+        
+        // Asegurar que customTags existe (para usuarios antiguos)
+        if (!data.customTags) {
+            data.customTags = ['Clases', 'Deporte', 'Trabajo', 'Estudio'];
+        }
+        
         setRoutine(data);
         
-        // Detectar si necesitamos precisión de 30 min
+        // Detectar intervalo
         const needs30Min = data.unavailableBlocks.some(b => b.start.includes(':30') || b.end.includes(':30'));
         const loadedInterval = needs30Min ? 30 : 60;
         setInterval(loadedInterval);
 
-        // Convertir TimeBlocks a celdas individuales
+        // Reconstruir grid
         const newGrid: Record<string, string> = {};
-        
         data.unavailableBlocks.forEach(block => {
           const [startH, startM] = block.start.split(':').map(Number);
           const [endH, endM] = block.end.split(':').map(Number);
           
-          // Normalizar tiempos para el bucle
           let currentH = startH;
           let currentM = startM;
           
-          // Bucle para rellenar celdas desde inicio hasta fin
-          // Nota: Esto asume que no cruza medianoche de forma compleja para simplificar el render inicial
           while (currentH < endH || (currentH === endH && currentM < endM)) {
             newGrid[`${block.day}-${currentH}-${currentM}`] = block.label || "Ocupado";
-            
-            // Avanzar
             currentM += loadedInterval;
             if (currentM >= 60) {
               currentM = 0;
@@ -88,8 +96,7 @@ export const RoutineForm = () => {
     let current = start;
     let safety = 0;
 
-    // Generar slots hasta la hora de dormir
-    while (current !== end && safety < 48) { // 48 = 24h * 2 (máximo slots de 30min)
+    while (current !== end && safety < 48) {
         slots.push({ h: current, m: 0 });
         if (interval === 30) {
             slots.push({ h: current, m: 30 });
@@ -100,13 +107,11 @@ export const RoutineForm = () => {
     return slots;
   }, [routine.sleepStart, routine.sleepEnd, interval]);
 
-  // Helper: Serializar Grid a Bloques optimizados
+  // Helper: Serializar Grid a Bloques
   const serializeGridToBlocks = (): TimeBlock[] => {
     const blocks: TimeBlock[] = [];
     
-    // Iterar por días
     for (let d = 0; d < 7; d++) {
-      // Obtener slots de este día ordenados por tiempo
       const dayKeys = Object.keys(gridData)
         .filter(k => k.startsWith(`${d}-`))
         .sort((a, b) => {
@@ -117,7 +122,6 @@ export const RoutineForm = () => {
 
       if (dayKeys.length === 0) continue;
 
-      // Algoritmo de fusión por continuidad Y etiqueta
       let currentBlockStartKey = dayKeys[0];
       let prevKey = dayKeys[0];
       let currentLabel = gridData[prevKey];
@@ -126,7 +130,6 @@ export const RoutineForm = () => {
         const key = dayKeys[i];
         const label = gridData[key];
         
-        // Comprobar continuidad
         const [, prevH, prevM] = prevKey.split('-').map(Number);
         const nextExpectedM = prevM + interval;
         const expectedH = nextExpectedM >= 60 ? prevH + 1 : prevH;
@@ -136,9 +139,7 @@ export const RoutineForm = () => {
         const isSameLabel = label === currentLabel;
 
         if (!key || !isConsecutive || !isSameLabel) {
-          // Cerrar bloque anterior
           const [, startH, startM] = currentBlockStartKey.split('-').map(Number);
-          // El fin es el previo + intervalo
           const [, endH, endM] = prevKey.split('-').map(Number);
           let finalEndM = endM + interval;
           let finalEndH = endH;
@@ -154,7 +155,6 @@ export const RoutineForm = () => {
             label: currentLabel
           });
 
-          // Iniciar nuevo bloque
           if (key) {
             currentBlockStartKey = key;
             currentLabel = label;
@@ -174,7 +174,7 @@ export const RoutineForm = () => {
       
       await setDoc(doc(db, 'users', DEMO_USER_ID, 'routine', 'weekly'), configToSave);
       setRoutine(configToSave);
-      alert('¡Rutina actualizada! Tus bloques se han guardado con sus etiquetas.');
+      alert('¡Rutina actualizada correctamente!');
     } catch (error) {
       console.error(error);
       alert('Error al guardar.');
@@ -182,45 +182,31 @@ export const RoutineForm = () => {
     setSaving(false);
   };
 
-  // --- INTERACCIÓN CON EL GRID ---
-  
-  const toggleSlot = (day: number, hour: number, minute: number) => {
-    const key = `${day}-${hour}-${minute}`;
-    const exists = !!gridData[key];
-    
-    setGridData(prev => {
-      const next = { ...prev };
-      if (exists && !isPainting) {
-        delete next[key];
-      } else if (!exists && isPainting) {
-        next[key] = currentLabel;
-      } else if (exists && isPainting) {
-        // Sobreescribir etiqueta si pintamos encima
-        next[key] = currentLabel;
-      }
-      return next;
-    });
+  // --- GESTIÓN DE ETIQUETAS ---
+  const handleAddTag = () => {
+    if (newTagInput.trim() && !routine.customTags?.includes(newTagInput.trim())) {
+        const updatedTags = [...(routine.customTags || []), newTagInput.trim()];
+        setRoutine(prev => ({ ...prev, customTags: updatedTags }));
+        setCurrentLabel(newTagInput.trim());
+        setNewTagInput("");
+    }
   };
 
+  const handleDeleteTag = (tagToDelete: string) => {
+      if (window.confirm(`¿Eliminar la etiqueta "${tagToDelete}"?`)) {
+          const updatedTags = routine.customTags?.filter(t => t !== tagToDelete) || [];
+          setRoutine(prev => ({ ...prev, customTags: updatedTags }));
+          if (currentLabel === tagToDelete) setCurrentLabel(updatedTags[0] || "");
+      }
+  };
+
+  // --- INTERACCIÓN CON EL GRID ---
   const handleMouseDown = (day: number, hour: number, minute: number) => {
     setIsMouseDown(true);
     const key = `${day}-${hour}-${minute}`;
-    // Si ya tiene algo, asumimos que queremos borrar o sobreescribir?
-    // Lógica simple: Si tiene la MISMA etiqueta -> Borrar. Si tiene OTRA o NADA -> Pintar.
-    const currentVal = gridData[key];
-    const willPaint = currentVal !== currentLabel; // Si es diferente, pintamos (sobreescribimos). Si es igual, borramos (toggle).
-    
-    // Pero para arrastre consistente, mejor definir "Modo Pintar" vs "Modo Borrar" basado en el primer click
-    const mode = !currentVal; // Si está vacío, modo pintar. Si está lleno, modo borrar? 
-    // Mejor: Siempre pintar salvo que usemos la herramienta borrador explícita, o click simple toggle.
-    // Vamos a simplificar: Click siempre pinta la "currentLabel".
-    // Para borrar, el usuario debe seleccionar la "etiqueta vacía" o un modo borrador?
-    // Vamos a hacer: Si haces click en una celda VACÍA -> start painting. Si es LLENA -> start erasing.
-    
     const startPainting = !gridData[key]; 
     setIsPainting(startPainting);
     
-    // Aplicar al inicial
     setGridData(prev => {
        const next = { ...prev };
        if (startPainting) next[key] = currentLabel;
@@ -241,15 +227,9 @@ export const RoutineForm = () => {
     }
   };
 
-  // Cambio de intervalo: Limpiar o Migrar?
-  // Para evitar bugs visuales complejos en esta demo, limpiamos el grid al cambiar precisión
-  // o intentamos migrar lo básico.
   const handleIntervalChange = (newInterval: 60 | 30) => {
      if (confirm("Cambiar el intervalo recalculará la vista. ¿Continuar?")) {
         setInterval(newInterval);
-        // Una migración simple sería borrar para evitar inconsistencias, o simplemente dejar que el render lo maneje
-        // (las keys antiguas no se mostrarán si no coinciden con los slots generados).
-        // Lo ideal: Limpiar para forzar al usuario a ser preciso con el nuevo formato.
         setGridData({});
      }
   };
@@ -275,7 +255,6 @@ export const RoutineForm = () => {
           </p>
         </div>
 
-        {/* --- BARRA DE HERRAMIENTAS SUPERIOR --- */}
         <div className="flex flex-col sm:flex-row gap-4 items-center">
            
            {/* Selector de Intervalo */}
@@ -284,50 +263,96 @@ export const RoutineForm = () => {
                 onClick={() => interval !== 60 && handleIntervalChange(60)}
                 className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${interval === 60 ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
-                1 Hora
+                1h
               </button>
               <button 
                 onClick={() => interval !== 30 && handleIntervalChange(30)}
                 className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all ${interval === 30 ? 'bg-white text-slate-800 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
-                30 Min
+                30m
               </button>
            </div>
 
            <div className="h-8 w-px bg-slate-200 hidden sm:block"></div>
 
-           {/* Selector de Etiqueta (Input) */}
-           <div className="flex items-center gap-2 w-full sm:w-auto">
-              <div className="relative flex-1">
-                 <Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                 <input 
-                   type="text" 
-                   value={currentLabel}
-                   onChange={(e) => setCurrentLabel(e.target.value)}
-                   className="pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-48"
-                   placeholder="Ej: Trabajo..."
-                 />
-              </div>
-              {/* Presets rápidos */}
-              <div className="flex gap-1">
-                 {['Clases', 'Deporte', 'Trabajo'].map(tag => (
-                    <button 
-                      key={tag}
-                      onClick={() => setCurrentLabel(tag)}
-                      className={`w-8 h-8 rounded-lg flex items-center justify-center border text-xs font-bold transition-all ${currentLabel === tag ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}
-                      title={tag}
+           {/* Selector de Etiqueta y Gestión */}
+           <div className="flex flex-col items-end gap-2 w-full sm:w-auto relative">
+              <div className="flex items-center gap-2 w-full">
+                  <div className="relative flex-1">
+                    <Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    {/* Dropdown de etiquetas o input si estamos editando */}
+                    <select 
+                        value={currentLabel}
+                        onChange={(e) => setCurrentLabel(e.target.value)}
+                        className="pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none w-full sm:w-48 appearance-none cursor-pointer"
                     >
-                       {tag[0]}
-                    </button>
-                 ))}
+                        {routine.customTags?.map(tag => (
+                            <option key={tag} value={tag}>{tag}</option>
+                        ))}
+                    </select>
+                    {/* Flecha custom para el select */}
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                    </div>
+                  </div>
+                  
+                  <button 
+                    onClick={() => setIsManagingTags(!isManagingTags)}
+                    className={`p-2 rounded-lg border transition-colors ${isManagingTags ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-white border-slate-200 text-slate-500 hover:bg-slate-50'}`}
+                    title="Gestionar etiquetas"
+                  >
+                    <Edit3 size={16} />
+                  </button>
               </div>
+
+              {/* PANEL FLOTANTE DE GESTIÓN DE ETIQUETAS */}
+              {isManagingTags && (
+                  <div className="absolute top-full right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-200 p-3 z-50 animate-in fade-in slide-in-from-top-2">
+                      <div className="flex justify-between items-center mb-2 pb-2 border-b border-slate-100">
+                          <span className="text-xs font-bold text-slate-500 uppercase">Mis Etiquetas</span>
+                          <button onClick={() => setIsManagingTags(false)}><X size={14} className="text-slate-400 hover:text-slate-600"/></button>
+                      </div>
+                      
+                      <div className="space-y-1 max-h-40 overflow-y-auto mb-3 custom-scrollbar">
+                          {routine.customTags?.map(tag => (
+                              <div key={tag} className="flex items-center justify-between group hover:bg-slate-50 p-1.5 rounded-md transition-colors">
+                                  <span className="text-sm text-slate-700 truncate flex-1">{tag}</span>
+                                  <button 
+                                    onClick={() => handleDeleteTag(tag)}
+                                    className="text-slate-300 hover:text-rose-500 opacity-0 group-hover:opacity-100 transition-opacity p-1"
+                                  >
+                                      <Eraser size={12} />
+                                  </button>
+                              </div>
+                          ))}
+                      </div>
+
+                      <div className="flex gap-2">
+                          <input 
+                            type="text" 
+                            placeholder="Nueva..."
+                            value={newTagInput}
+                            onChange={(e) => setNewTagInput(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && handleAddTag()}
+                            className="flex-1 px-2 py-1.5 text-sm bg-slate-50 border border-slate-200 rounded-md focus:border-blue-500 outline-none"
+                          />
+                          <button 
+                            onClick={handleAddTag}
+                            disabled={!newTagInput.trim()}
+                            className="bg-blue-600 text-white p-1.5 rounded-md hover:bg-blue-700 disabled:opacity-50"
+                          >
+                              <Plus size={16} />
+                          </button>
+                      </div>
+                  </div>
+              )}
            </div>
         </div>
       </header>
 
       <div className="grid lg:grid-cols-12 gap-6">
         
-        {/* Sidebar Izquierdo: Configuración de Sueño */}
+        {/* Sidebar Izquierdo */}
         <section className="lg:col-span-3 space-y-6">
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-200">
             <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2 text-sm uppercase tracking-wide text-slate-500">
@@ -374,7 +399,6 @@ export const RoutineForm = () => {
           
           <div className="flex-1 overflow-x-auto pb-4 select-none">
             <div className="min-w-[700px]">
-              {/* Header Días */}
               <div className="grid grid-cols-8 gap-1 mb-2 sticky top-0 z-10 bg-white">
                 <div className="text-[10px] font-bold text-slate-300 uppercase text-center pt-2">Hora</div>
                 {DAYS.map((day, i) => (
@@ -384,28 +408,40 @@ export const RoutineForm = () => {
                 ))}
               </div>
 
-              {/* Grid Cuerpo */}
               <div className="space-y-1" onMouseLeave={() => setIsMouseDown(false)}>
                 {timeSlots.map(({ h, m }) => (
                   <div key={`${h}-${m}`} className="grid grid-cols-8 gap-1 h-8">
-                    {/* Etiqueta Hora */}
                     <div className="text-[10px] font-mono text-slate-400 flex items-center justify-end pr-2 relative top-[-6px]">
                       {m === 0 ? `${h}:00` : ''} 
-                      {/* Solo mostramos la hora en punto para no saturar, o ponemos :30 pequeño */}
                       {m === 30 && <span className="text-[8px] opacity-50 ml-1">:30</span>}
                     </div>
                     
-                    {/* Celdas */}
                     {DAYS.map((_, dayIndex) => {
                       const key = `${dayIndex}-${h}-${m}`;
                       const label = gridData[key];
                       const isSelected = !!label;
                       
-                      // Color dinámico simple basado en la etiqueta (hash simple)
+                      // Asignación dinámica de colores basada en la etiqueta (hash simple)
+                      // Usamos el primer caracter para decidir el color para mantener consistencia visual
+                      const charCode = label ? label.charCodeAt(0) : 0;
                       let colorClass = 'bg-slate-800 border-slate-900 text-white';
-                      if (label === 'Deporte') colorClass = 'bg-emerald-500 border-emerald-600 text-white';
-                      if (label === 'Trabajo') colorClass = 'bg-amber-500 border-amber-600 text-white';
-                      if (label === 'Clases') colorClass = 'bg-indigo-500 border-indigo-600 text-white';
+                      
+                      if (label) {
+                          if (['Clases', 'Estudio', 'Universidad'].includes(label)) colorClass = 'bg-indigo-500 border-indigo-600 text-white';
+                          else if (['Deporte', 'Gimnasio', 'Entreno'].includes(label)) colorClass = 'bg-emerald-500 border-emerald-600 text-white';
+                          else if (['Trabajo', 'Reunión'].includes(label)) colorClass = 'bg-amber-500 border-amber-600 text-white';
+                          else if (['Ocio', 'Fiesta', 'Descanso'].includes(label)) colorClass = 'bg-rose-500 border-rose-600 text-white';
+                          else {
+                              // Fallback dinámico para etiquetas custom
+                              const colors = [
+                                  'bg-blue-500 border-blue-600', 
+                                  'bg-purple-500 border-purple-600', 
+                                  'bg-cyan-500 border-cyan-600',
+                                  'bg-pink-500 border-pink-600'
+                              ];
+                              colorClass = `${colors[charCode % colors.length]} text-white`;
+                          }
+                      }
 
                       return (
                         <div

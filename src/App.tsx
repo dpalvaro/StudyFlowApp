@@ -15,17 +15,21 @@ import { PlanView } from './features/calendar/PlanView';
 import { AnalyticsView } from './features/analytics/AnalyticsView';
 import { PremiumGuard } from './components/ui/PremiumGuard';
 import { OnboardingWizard } from './features/onboarding/OnboardingWizard';
+import { SettingsView } from './features/settings/SettingsView'; // <--- IMPORTANTE
 
 function App() {
   const { user, profile } = useAuth(); 
   const USER_ID = user?.uid || "unknown";
 
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'calendar' | 'analytics'>('dashboard');
+  // Añadimos 'settings' al estado
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'tasks' | 'calendar' | 'analytics' | 'settings'>('dashboard');
+  
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false); 
 
+  // ... (RESTO DE LÓGICA DE FIRESTORE IGUAL QUE ANTES) ...
   // --- FIRESTORE: LECTURA ---
   useEffect(() => {
     if (!user) return;
@@ -39,7 +43,6 @@ function App() {
         return {
           id: doc.id,
           ...data,
-          // Convertir Timestamp a string YYYY-MM-DD si es necesario para inputs date
           dueDate: data.dueDate?.toDate ? data.dueDate.toDate().toISOString().split('T')[0] : data.dueDate
         } as Task;
       });
@@ -52,10 +55,8 @@ function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // --- FIRESTORE: ESCRITURA (CRUD) ---
-  
+  // --- FIRESTORE: ESCRITURA ---
   const handleStatusChange = async (id: string, status: TaskStatus) => {
-    // Optimistic UI update
     setTasks(prev => prev.map(t => t.id === id ? { ...t, status } : t));
     await updateDoc(doc(db, 'users', USER_ID, 'tasks', id), { status });
   };
@@ -87,8 +88,6 @@ function App() {
     signOut(auth);
   };
 
-  // --- RENDER ---
-
   if (loading && tasks.length === 0) {
     return <div className="min-h-screen flex items-center justify-center bg-slate-50"><Loader2 className="animate-spin text-blue-600" /></div>;
   }
@@ -96,7 +95,6 @@ function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans flex">
       
-      {/* --- WIZARD DE BIENVENIDA --- */}
       {profile && !profile.hasCompletedOnboarding && <OnboardingWizard />}
 
       <CreateTaskModal 
@@ -105,15 +103,15 @@ function App() {
         onSubmit={handleCreateTask} 
       />
 
-      {/* Sidebar */}
       <div className="relative hidden md:flex">
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+        {/* ... (Resto del Sidebar igual) ... */}
         <div className="absolute bottom-16 left-4 w-64 px-4 mb-2">
            <div className="p-3 bg-slate-100 rounded-xl border border-slate-200">
               <p className="text-xs text-slate-500 font-bold uppercase mb-1">Tu Plan</p>
               <div className="flex items-center justify-between">
                  <span className={`text-sm font-bold ${profile?.subscriptionStatus === 'PREMIUM' ? 'text-indigo-600' : 'text-slate-700'}`}>
-                    {profile?.subscriptionStatus === 'PREMIUM' ? 'Ingeniero Pro ⚡' : 'Estudiante Free'}
+                    {profile?.subscriptionStatus === 'PREMIUM' ? 'Estudiante Pro ⚡' : 'Plan Básico'}
                  </span>
               </div>
            </div>
@@ -125,7 +123,6 @@ function App() {
         </div>
       </div>
 
-      {/* Mobile Header */}
       <div className="md:hidden fixed top-0 w-full bg-white border-b border-slate-200 z-50 px-4 h-16 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-bold">S</div>
@@ -139,7 +136,6 @@ function App() {
       <main className="flex-1 md:ml-72 p-4 md:p-8 mt-16 md:mt-0 overflow-y-auto h-screen">
         <div className="max-w-6xl mx-auto">
           
-          {/* Saludo Personalizado */}
           <div className="mb-8 animate-in fade-in">
               <h1 className="text-2xl md:text-3xl font-bold text-slate-900">
                 {profile?.displayName ? `¡Hola, ${profile.displayName}! 👋` : '¡Hola! 👋'}
@@ -152,12 +148,14 @@ function App() {
           {activeTab === 'dashboard' && (
             <DashboardView 
               tasks={tasks} 
-              onAddTask={() => setIsModalOpen(true)} // <--- AQUÍ ESTÁ EL ARREGLO
+              onAddTask={() => setIsModalOpen(true)} 
+              onTaskComplete={(id) => handleStatusChange(id, 'DONE')}
             />
           )}
           
           {activeTab === 'tasks' && (
             <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+              {/* ... (Código de KanbanBoard igual) ... */}
               <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
                 <div>
                   <h2 className="text-2xl font-bold text-slate-900">Tablero de Tareas</h2>
@@ -182,8 +180,6 @@ function App() {
             </div>
           )}
 
-          {/* --- VISTAS PROTEGIDAS --- */}
-          
           {activeTab === 'calendar' && (
             <PremiumGuard featureName="el Planificador IA">
                <PlanView tasks={tasks} /> 
@@ -195,6 +191,12 @@ function App() {
                <AnalyticsView tasks={tasks} />
             </PremiumGuard>
           )}
+
+          {/* --- NUEVA VISTA: CONFIGURACIÓN --- */}
+          {activeTab === 'settings' && (
+             <SettingsView />
+          )}
+
         </div>
       </main>
     </div>
