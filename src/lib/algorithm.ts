@@ -1,138 +1,210 @@
-import type { Task, RoutineConfig, StudySession, TimeBlock } from '../types';
-import { addDays, setHours, setMinutes, format, parse, differenceInMinutes, isAfter, isBefore, getDay, addMinutes } from 'date-fns';
+import type { Task, RoutineConfig, StudySession, DifficultyLevel, ContentType } from '../types';
+import { addDays, setHours, setMinutes, differenceInMinutes, isAfter, isBefore, getDay, addMinutes, isValid, differenceInDays, startOfDay } from 'date-fns';
 
-// --- HELPER: Parsear horas "HH:mm" a Date hoy/mañana ---
-const parseTimeOnDate = (timeStr: string, baseDate: Date): Date => {
-  const [hours, minutes] = timeStr.split(':').map(Number);
-  return setMinutes(setHours(baseDate, hours), minutes);
+// --- CONSTANTES DE ESTIMACIÓN ---
+const BASE_TIME_MINUTES: Record<ContentType, number> = {
+  PAGES: 6,       
+  EXERCISES: 15,  
+  TOPICS: 45,     
+  PROJECT_HOURS: 60 
 };
 
-// --- PASO 1: Calcular Urgencia (WEDF) ---
-const calculateUrgency = (task: Task): number => {
+const DIFFICULTY_MULTIPLIER: Record<DifficultyLevel, number> = {
+  EASY: 0.8,    
+  MEDIUM: 1.0,  
+  HARD: 1.5,    
+  EXTREME: 2.5  
+};
+
+// --- 1. CALCULADORA DE TIEMPO ---
+export const calculateEstimatedDuration = (
+  amount: number, 
+  type: ContentType, 
+  difficulty: DifficultyLevel
+): number => {
+  const baseTime = BASE_TIME_MINUTES[type] || BASE_TIME_MINUTES.PAGES; 
+  const multiplier = DIFFICULTY_MULTIPLIER[difficulty] || 1.0;
+  const rawTime = (amount || 0) * baseTime * multiplier;
+  return Math.round(rawTime * 1.1); 
+};
+
+// --- 2. CALCULADORA DE PRIORIDAD ---
+export const calculateSmartScore = (task: Task): number => {
   const now = new Date();
   const dueDate = new Date(task.dueDate);
   
-  // Días hasta la entrega (mínimo 0.1 para evitar división por cero)
+  if (!isValid(dueDate)) return 0; 
+
+  // Calculamos urgencia
   const daysUntilDue = Math.max(0.1, (dueDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-  
-  const priorityWeight = { 'HIGH': 3, 'MEDIUM': 2, 'LOW': 1 };
-  
-  // FÓRMULA WEDF: (Peso Prioridad * 2) + (10 / Días Restantes)
-  // Tareas urgentes disparan su score. Tareas importantes tienen base alta.
-  return (priorityWeight[task.priority] * 2) + (10 / daysUntilDue);
+  const urgencyScore = 100 / Math.pow(daysUntilDue, 1.2); // Ajustado exponente para no disparar score demasiado pronto
+
+  const impactScore = (task.gradeImpact || 0) * 2; 
+  const preferenceScore = (task.personalImportance || 1) * 10;
+
+  const difficultyWeights = { EASY: 0, MEDIUM: 10, HARD: 30, EXTREME: 50 };
+  const difficultyScore = difficultyWeights[task.difficulty || 'MEDIUM'] || 10;
+
+  return urgencyScore + impactScore + difficultyScore + preferenceScore;
 };
 
-// --- PASO 2: Generar Huecos Libres (Availability Map) ---
-const getAvailableSlots = (routine: RoutineConfig, daysToPlan: number = 3) => {
+// --- HELPERS DE FECHA ROBUSTOS ---
+const parseTimeOnDate = (timeStr: string | undefined, baseDate: Date): Date | null => {
+  if (!timeStr || typeof timeStr !== 'string' || !timeStr.includes(':')) return null;
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  if (isNaN(hours) || isNaN(minutes)) return null;
+  return setMinutes(setHours(baseDate, hours), minutes);
+};
+
+const getAvailableSlots = (routine: RoutineConfig, daysToPlan: number) => {
   let slots: { start: Date; end: Date }[] = [];
   const now = new Date();
 
+  // Valores por defecto seguros
+  const sleepStart = routine?.sleepStart || "23:00";
+  const sleepEnd = routine?.sleepEnd || "07:00";
+  const unavailableBlocks = routine?.unavailableBlocks || [];
+
   for (let i = 0; i < daysToPlan; i++) {
     const currentDate = addDays(now, i);
-    
-    // 1. Definir ventana despierto del día (Ej: 07:00 a 23:00)
-    let dayStart = parseTimeOnDate(routine.sleepEnd, currentDate);
-    let dayEnd = parseTimeOnDate(routine.sleepStart, currentDate);
+    let dayStart = parseTimeOnDate(sleepEnd, currentDate); // Hora despertar
+    let dayEnd = parseTimeOnDate(sleepStart, currentDate); // Hora dormir
 
-    // Si es hoy y ya son las 10:00, el inicio es ahora (no planificar en el pasado)
-    if (i === 0 && isAfter(now, dayStart)) {
-      dayStart = addMinutes(now, 15); // Empezar 15 min en el futuro
+    if (!dayStart || !dayEnd) continue;
+
+    // CORRECCIÓN CRÍTICA: Manejo de horario nocturno (Ej: dormir a la 01:00 AM)
+    // Si la hora de dormir es "menor" que la de despertar, significa que es el día siguiente.
+    if (isBefore(dayEnd, dayStart)) {
+        dayEnd = addDays(dayEnd, 1);
     }
 
-    if (isAfter(dayStart, dayEnd)) continue; // Ya pasó el día
+    // Si es hoy y ya pasó la hora de inicio, empezamos desde "ahora"
+    if (i === 0 && isAfter(now, dayStart)) {
+      dayStart = addMinutes(now, 15); // 15 min buffer
+    }
 
-    // 2. Obtener bloqueos (Clases) para este día de la semana
-    const currentDayOfWeek = getDay(currentDate); // 0=Domingo
-    const todayBlocks = routine.unavailableBlocks
+    // Si el tiempo disponible ya pasó (ej: son las 23:30 y te duermes a las 23:00), saltar día
+    if (isAfter(dayStart, dayEnd)) continue;
+
+    const currentDayOfWeek = getDay(currentDate);
+    const todayBlocks = unavailableBlocks
       .filter(b => b.day === currentDayOfWeek)
       .map(b => ({
         start: parseTimeOnDate(b.start, currentDate),
         end: parseTimeOnDate(b.end, currentDate)
       }))
-      .sort((a, b) => a.start.getTime() - b.start.getTime());
+      .filter(b => b.start !== null && b.end !== null) as { start: Date; end: Date }[];
+      
+    // Ordenar bloques por hora
+    todayBlocks.sort((a, b) => a.start.getTime() - b.start.getTime());
 
-    // 3. Restar bloqueos a la ventana principal (Algoritmo de sustracción de intervalos)
     let pointer = dayStart;
 
     for (const block of todayBlocks) {
-      // Si hay hueco entre el puntero y el inicio del bloqueo, es tiempo libre
+      // Si el puntero está antes del bloque, hay hueco
       if (isBefore(pointer, block.start)) {
-        if (differenceInMinutes(block.start, pointer) >= 30) { // Mínimo 30 min para estudiar
+        // Solo huecos útiles > 30 min
+        if (differenceInMinutes(block.start, pointer) >= 30) {
           slots.push({ start: pointer, end: block.start });
         }
       }
-      // Mover el puntero al final del bloqueo si es posterior
+      // Mover puntero al final del bloqueo si es posterior
       if (isAfter(block.end, pointer)) {
         pointer = block.end;
       }
     }
 
-    // Añadir el último hueco del día (después de la última clase hasta dormir)
+    // Último hueco del día (desde el último bloqueo hasta dormir)
     if (isBefore(pointer, dayEnd) && differenceInMinutes(dayEnd, pointer) >= 30) {
       slots.push({ start: pointer, end: dayEnd });
     }
   }
-  
   return slots;
 };
 
-// --- FUNCIÓN PRINCIPAL: Generar Plan ---
+// --- 3. GENERADOR DE PLAN ---
 export const generateStudyPlan = (tasks: Task[], routine: RoutineConfig): StudySession[] => {
-  
-  // 1. Preparar Tareas: Filtrar pendientes y calcular prioridad
-  let pendingTasks = tasks
-    .filter(t => t.status !== 'DONE')
-    .map(t => ({ ...t, urgency: calculateUrgency(t), remainingDuration: t.duration }))
-    .sort((a, b) => b.urgency - a.urgency); // Ordenar por mayor urgencia
+  if (!tasks || tasks.length === 0) return [];
 
-  // 2. Obtener Huecos Libres
-  const slots = getAvailableSlots(routine);
+  // 1. Preparar tareas
+  let activeTasks = tasks
+    .filter(t => t.status !== 'DONE')
+    .map(t => ({ 
+      ...t, 
+      calculatedPriorityScore: calculateSmartScore(t),
+      remainingDuration: t.estimatedDuration || 60,
+      dueDateObj: new Date(t.dueDate) // Asegurar objeto Date
+    }))
+    .sort((a, b) => b.calculatedPriorityScore - a.calculatedPriorityScore);
+
+  if (activeTasks.length === 0) return [];
+
+  // 2. Horizonte Temporal Dinámico
+  const today = new Date();
+  let maxDueDate = addDays(today, 7); // Mínimo una semana
+
+  activeTasks.forEach(t => {
+    if (isValid(t.dueDateObj) && isAfter(t.dueDateObj, maxDueDate)) {
+      maxDueDate = t.dueDateObj;
+    }
+  });
+
+  // Calcular días necesarios (+ buffer de seguridad)
+  let daysToPlan = differenceInDays(maxDueDate, today) + 5; 
+  if (daysToPlan > 90) daysToPlan = 90; // Límite técnico de 3 meses
+  if (daysToPlan < 1) daysToPlan = 1;
+
+  // 3. Obtener huecos
+  const slots = getAvailableSlots(routine, daysToPlan);
   const schedule: StudySession[] = [];
 
-  // 3. Asignación Voraz (Greedy) con Fragmentación
+  // 4. Asignación
   for (const slot of slots) {
-    if (pendingTasks.length === 0) break; // Ya no hay tareas
+    if (activeTasks.length === 0) break;
 
     let slotDuration = differenceInMinutes(slot.end, slot.start);
     let currentSlotTime = slot.start;
 
-    // Intentar llenar el hueco con tareas
-    for (let i = 0; i < pendingTasks.length; i++) {
-      const task = pendingTasks[i];
+    // Bucle de asignación en el slot
+    for (let i = 0; i < activeTasks.length; i++) {
+      const task = activeTasks[i];
       if (task.remainingDuration <= 0) continue;
 
-      if (slotDuration >= 15) { // Solo asignar si quedan al menos 15 mins
-        // Determinar cuánto tiempo dedicar (lo que quede de tarea o lo que quepa en el hueco)
-        const timeToAllocate = Math.min(task.remainingDuration, slotDuration);
-        
-        // Crear sesión
-        schedule.push({
-          id: Math.random().toString(36).substr(2, 9),
-          taskId: task.id,
-          taskTitle: task.title,
-          subject: task.subject,
-          startTime: currentSlotTime,
-          endTime: addMinutes(currentSlotTime, timeToAllocate),
-          durationMinutes: timeToAllocate
-        });
+      // REGLA: No programar después de la fecha límite
+      // Usamos el final del día de entrega para ser flexibles
+      const deadline = addDays(task.dueDateObj, 1); 
+      deadline.setHours(23, 59, 59);
+      
+      if (isAfter(currentSlotTime, deadline)) continue;
 
-        // Actualizar contadores
+      if (slotDuration >= 20) {
+        const timeToAllocate = Math.min(task.remainingDuration, slotDuration);
+        const sessionEnd = addMinutes(currentSlotTime, timeToAllocate);
+
+        if (isValid(currentSlotTime) && isValid(sessionEnd)) {
+            schedule.push({
+              id: crypto.randomUUID(),
+              taskId: task.id,
+              taskTitle: task.title,
+              subject: task.subject,
+              startTime: new Date(currentSlotTime), // Copia nueva fecha
+              endTime: new Date(sessionEnd),
+              durationMinutes: timeToAllocate
+            });
+        }
+
         task.remainingDuration -= timeToAllocate;
         slotDuration -= timeToAllocate;
         currentSlotTime = addMinutes(currentSlotTime, timeToAllocate);
 
-        // Si terminamos la tarea, la quitamos virtualmente (remainingDuration ya es 0)
-        if (task.remainingDuration <= 0) {
-            // Task completada en planificación
-        }
-        
-        // Añadir pequeño descanso si cambiamos de tarea (context switching simulado)
-        if (slotDuration > 0) {
+        if (slotDuration > 5) {
             slotDuration -= 5; 
             currentSlotTime = addMinutes(currentSlotTime, 5);
         }
       }
     }
+    // Limpiar tareas acabadas
+    activeTasks = activeTasks.filter(t => t.remainingDuration > 0);
   }
 
   return schedule;

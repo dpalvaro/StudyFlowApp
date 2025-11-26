@@ -1,18 +1,18 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Clock, Save, Moon, Sun, BookOpen, Info, Eraser, Tag, Plus, X, Edit3 } from 'lucide-react';
+import { Clock, Save, Moon, Sun, BookOpen, Info, Eraser, Tag, Plus, X, Edit3, Loader2 } from 'lucide-react';
 import type { RoutineConfig, TimeBlock } from '../../types';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../../lib/firebase';
+import { useAuth } from '../../context/AuthContext'; // <--- IMPORTANTE
 
-const DEMO_USER_ID = "demo-student";
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-// Extendemos la interfaz para incluir las etiquetas personalizadas si no existen
 interface ExtendedRoutineConfig extends RoutineConfig {
   customTags?: string[];
 }
 
 export const RoutineForm = () => {
+  const { user } = useAuth(); // <--- Usamos el usuario real
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   
@@ -21,46 +21,39 @@ export const RoutineForm = () => {
     sleepStart: "23:00",
     sleepEnd: "07:00",
     unavailableBlocks: [],
-    customTags: ['Clases', 'Deporte', 'Trabajo', 'Estudio'] // Default tags
+    customTags: ['Clases', 'Deporte', 'Trabajo', 'Estudio'] 
   });
 
   const [interval, setInterval] = useState<60 | 30>(60);
-  
-  // Etiqueta actual para "pintar"
   const [currentLabel, setCurrentLabel] = useState("Clases");
-  
-  // Estado para gestionar la edición de etiquetas
   const [isManagingTags, setIsManagingTags] = useState(false);
   const [newTagInput, setNewTagInput] = useState("");
-
-  // Estado visual del Grid
   const [gridData, setGridData] = useState<Record<string, string>>({});
-  
   const [isMouseDown, setIsMouseDown] = useState(false);
   const [isPainting, setIsPainting] = useState(true);
 
-  // 1. Cargar Rutina
+  // 1. Cargar Rutina (DEL USUARIO REAL)
   useEffect(() => {
+    if (!user) return; // Esperar a que haya usuario
+
     const fetchRoutine = async () => {
-      const docRef = doc(db, 'users', DEMO_USER_ID, 'routine', 'weekly');
+      // CORRECCIÓN: Usar user.uid en lugar de DEMO_USER_ID
+      const docRef = doc(db, 'users', user.uid, 'routine', 'weekly');
       const docSnap = await getDoc(docRef);
       
       if (docSnap.exists()) {
         const data = docSnap.data() as ExtendedRoutineConfig;
         
-        // Asegurar que customTags existe (para usuarios antiguos)
         if (!data.customTags) {
             data.customTags = ['Clases', 'Deporte', 'Trabajo', 'Estudio'];
         }
         
         setRoutine(data);
         
-        // Detectar intervalo
         const needs30Min = data.unavailableBlocks.some(b => b.start.includes(':30') || b.end.includes(':30'));
         const loadedInterval = needs30Min ? 30 : 60;
         setInterval(loadedInterval);
 
-        // Reconstruir grid
         const newGrid: Record<string, string> = {};
         data.unavailableBlocks.forEach(block => {
           const [startH, startM] = block.start.split(':').map(Number);
@@ -83,9 +76,8 @@ export const RoutineForm = () => {
       setLoading(false);
     };
     fetchRoutine();
-  }, []);
+  }, [user]); // Dependencia user añadida
 
-  // --- Generar slots dinámicamente ---
   const timeSlots = useMemo(() => {
     const start = parseInt(routine.sleepEnd.split(':')[0]); 
     const end = parseInt(routine.sleepStart.split(':')[0]); 
@@ -107,7 +99,6 @@ export const RoutineForm = () => {
     return slots;
   }, [routine.sleepStart, routine.sleepEnd, interval]);
 
-  // Helper: Serializar Grid a Bloques
   const serializeGridToBlocks = (): TimeBlock[] => {
     const blocks: TimeBlock[] = [];
     
@@ -166,13 +157,15 @@ export const RoutineForm = () => {
     return blocks;
   };
 
+  // CORRECCIÓN: Guardar usando user.uid
   const handleSave = async () => {
+    if (!user) return;
     setSaving(true);
     try {
       const optimizedBlocks = serializeGridToBlocks();
       const configToSave = { ...routine, unavailableBlocks: optimizedBlocks };
       
-      await setDoc(doc(db, 'users', DEMO_USER_ID, 'routine', 'weekly'), configToSave);
+      await setDoc(doc(db, 'users', user.uid, 'routine', 'weekly'), configToSave);
       setRoutine(configToSave);
       alert('¡Rutina actualizada correctamente!');
     } catch (error) {
@@ -182,7 +175,6 @@ export const RoutineForm = () => {
     setSaving(false);
   };
 
-  // --- GESTIÓN DE ETIQUETAS ---
   const handleAddTag = () => {
     if (newTagInput.trim() && !routine.customTags?.includes(newTagInput.trim())) {
         const updatedTags = [...(routine.customTags || []), newTagInput.trim()];
@@ -200,7 +192,6 @@ export const RoutineForm = () => {
       }
   };
 
-  // --- INTERACCIÓN CON EL GRID ---
   const handleMouseDown = (day: number, hour: number, minute: number) => {
     setIsMouseDown(true);
     const key = `${day}-${hour}-${minute}`;
@@ -240,7 +231,7 @@ export const RoutineForm = () => {
     return () => window.removeEventListener('mouseup', handleUp);
   }, []);
 
-  if (loading) return <div className="p-8 text-center text-slate-500 animate-pulse">Cargando...</div>;
+  if (loading) return <div className="p-8 flex justify-center"><Loader2 className="animate-spin text-slate-400" /></div>;
 
   return (
     <div className="max-w-6xl mx-auto space-y-6 animate-in fade-in slide-in-from-bottom-4 pb-24">
@@ -280,7 +271,6 @@ export const RoutineForm = () => {
               <div className="flex items-center gap-2 w-full">
                   <div className="relative flex-1">
                     <Tag size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    {/* Dropdown de etiquetas o input si estamos editando */}
                     <select 
                         value={currentLabel}
                         onChange={(e) => setCurrentLabel(e.target.value)}
@@ -290,7 +280,6 @@ export const RoutineForm = () => {
                             <option key={tag} value={tag}>{tag}</option>
                         ))}
                     </select>
-                    {/* Flecha custom para el select */}
                     <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6"/></svg>
                     </div>
@@ -421,8 +410,6 @@ export const RoutineForm = () => {
                       const label = gridData[key];
                       const isSelected = !!label;
                       
-                      // Asignación dinámica de colores basada en la etiqueta (hash simple)
-                      // Usamos el primer caracter para decidir el color para mantener consistencia visual
                       const charCode = label ? label.charCodeAt(0) : 0;
                       let colorClass = 'bg-slate-800 border-slate-900 text-white';
                       
@@ -432,7 +419,6 @@ export const RoutineForm = () => {
                           else if (['Trabajo', 'Reunión'].includes(label)) colorClass = 'bg-amber-500 border-amber-600 text-white';
                           else if (['Ocio', 'Fiesta', 'Descanso'].includes(label)) colorClass = 'bg-rose-500 border-rose-600 text-white';
                           else {
-                              // Fallback dinámico para etiquetas custom
                               const colors = [
                                   'bg-blue-500 border-blue-600', 
                                   'bg-purple-500 border-purple-600', 
@@ -476,7 +462,7 @@ export const RoutineForm = () => {
           className="bg-slate-900 hover:bg-slate-800 text-white px-8 py-4 rounded-full font-bold flex items-center gap-3 shadow-2xl shadow-slate-900/30 disabled:opacity-50 transition-all hover:scale-105 active:scale-95 border-2 border-slate-700"
         >
           <Save size={20} />
-          {saving ? 'Guardando...' : 'Guardar Rutina'}
+          {saving ? 'Guardando...' : 'Guardar Cambios'}
         </button>
       </div>
 
